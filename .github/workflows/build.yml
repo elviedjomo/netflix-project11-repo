@@ -45,7 +45,7 @@ jobs:
               DOCKER_CLI_ACI: 1
   deploy:    
     needs: build
-    runs-on: [aws-netflix]  
+    runs-on: [netflix-server]  
     steps:
       - name: Pull the docker image
         run: docker pull elviedjomo/netflix:latest
