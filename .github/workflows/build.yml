@@ -1,55 +1,142 @@
-name: Build
+name: Build and Deploy to EC2
 
 on:
   push:
     branches:
       - main
 
-
 jobs:
   build:
-    name: Build
+    name: Build Docker Image
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout code
+        uses: actions/checkout@v2
         with:
-          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
-      - uses: sonarsource/sonarqube-scan-action@master
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      # If you wish to fail your job when the Quality Gate is red, uncomment the
-      # following lines. This would typically be used to fail a deployment.
+
+      # Optional: Fail build if quality gate fails
       # - uses: sonarsource/sonarqube-quality-gate-action@master
       #   timeout-minutes: 5
       #   env:
       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      - name: install trivy
+
+      - name: Install and Run Trivy (Filesystem Scan)
         run: |
-          #install trivy
-          sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+          sudo apt-get update && sudo apt-get install -y wget gnupg lsb-release apt-transport-https
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install trivy -y
-          #command to scan files
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
           trivy fs .
-      - name: Docker build and push
+
+      - name: Docker Build and Push to Docker Hub
         run: |
-              #run commands to build and push docker images
-              docker build --build-arg TMDB_V3_API_KEY=9148c23062dfce8824e0e2a10b1b2636 -t netflix .
-              docker tag netflix elviedjomo/netflix:latest
-              docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
-              docker push elviedjomo/netflix:latest  
+          docker build --build-arg TMDB_V3_API_KEY=${{ secrets.TMDB_API_KEY }} -t netflix .
+          docker tag netflix elviedjomo/netflix:latest
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          docker push elviedjomo/netflix:latest
         env:
-              DOCKER_CLI_ACI: 1
-  deploy:    
+          DOCKER_CLI_ACI: 1
+
+  deploy:
+    name: Deploy on EC2
     needs: build
-    runs-on: [netflix-server]  
+    runs-on: name: Build and Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Pull the docker image
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # Optional: Fail build if quality gate fails
+      # - uses: sonarsource/sonarqube-quality-gate-action@master
+      #   timeout-minutes: 5
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Install and Run Trivy (Filesystem Scan)
+        run: |
+          sudo apt-get update && sudo apt-get install -y wget gnupg lsb-release apt-transport-https
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+          trivy fs .
+
+      - name: Docker Build and Push to Docker Hub
+        run: |
+          docker build --build-arg TMDB_V3_API_KEY=${{ secrets.TMDB_API_KEY }} -t netflix .
+          docker tag netflix elviedjomo/netflix:latest
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          docker push elviedjomo/netflix:latest
+        env:
+          DOCKER_CLI_ACI: 1
+
+  deploy:
+    name: Deploy on EC2
+    needs: build
+    runs-on: [aws-netflix]  # Self-hosted EC2 runner
+    timeout-minutes: 10
+
+    steps:
+      - name: Show Docker Status (Pre-deploy)
+        run: docker ps -a
+
+      - name: Remove Old Container (if exists)
+        run: docker rm -f netflix || true
+
+      - name: Prune Unused Docker Resources
+        run: docker system prune -f
+
+      - name: Pull Latest Docker Image
         run: docker pull elviedjomo/netflix:latest
-      - name: Trivy image scan
+
+      - name: Trivy Image Scan
         run: trivy image elviedjomo/netflix:latest
-      - name: Run the container netflix
-        run: docker run -d --name netflix -p 8081:80 elviedjomo/netflix:latest        
+
+      - name: Run Docker Container
+        run: docker run -d --name netflix -p 8081:80 elviedjomo/netflix:latest
+  # Self-hosted EC2 runner
+    timeout-minutes: 10
+
+    steps:
+      - name: Show Docker Status (Pre-deploy)
+        run: docker ps -a
+
+      - name: Remove Old Container (if exists)
+        run: docker rm -f netflix || true
+
+      - name: Prune Unused Docker Resources
+        run: docker system prune -f
+
+      - name: Pull Latest Docker Image
+        run: docker pull elviedjomo/netflix:latest
+
+      - name: Trivy Image Scan
+        run: trivy image elviedjomo/netflix:latest
+
+      - name: Run Docker Container
+        run: docker run -d --name netflix -p 8081:80 elviedjomo/netflix:latest
